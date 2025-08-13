@@ -23,7 +23,7 @@ pub enum Potato {
 pub struct State {
     pub init: InitializeParams,
 
-    pub symbols: Vec<(String, Option<String>, SymbolKind, Location)>,
+    pub symbols: Vec<(String, String, Option<String>, SymbolKind, Location)>,
 
     pub symbol_lookup: HashMap<Url, Vec<usize>>,
     pub reverse: HashMap<String, Vec<usize>>,
@@ -43,7 +43,7 @@ pub fn state_initialize(state: &mut State) {
     let mut to_do = vec![workspace_folder.clone()];
     let mut files_to_check = vec![];
 
-    let forbidden = ["target", ".git", "backups", "entities", "scenes"];
+    let forbidden = ["target", ".git", "backups", "entities", "scenes", "tests", "stdarch", "backtrace"];
 
     let res = std::process::Command::new("rustup")
         .args(["which", "rustc"])
@@ -120,6 +120,10 @@ pub fn state_initialize(state: &mut State) {
             let p = entry.path();
             if p.is_file() {
                 if p.extension().is_some_and(|e| e == "rs") {
+                    if p.ends_with("tests.rs") {
+                        continue;
+                    }
+
                     files_to_check.push(current.join(p));
                 }
             } else {
@@ -192,7 +196,8 @@ pub fn state_initialize(state: &mut State) {
 
                         let i = symbols.len();
                         symbols.push((
-                            name,
+                            name.clone(),
+                            name.to_lowercase(),
                             None,
                             kind,
                             Location::new(
@@ -227,7 +232,8 @@ pub fn state_initialize(state: &mut State) {
                 if last_was_colon {
                     let i = symbols.len();
                     symbols.push((
-                        name,
+                        name.clone(),
+                        name.to_lowercase(),
                         (!last_enum_or_struct_name.is_empty())
                             .then(|| last_enum_or_struct_name.clone()),
                         SymbolKind::FIELD,
@@ -245,7 +251,7 @@ pub fn state_initialize(state: &mut State) {
         }
 
         let end = symbols.len();
-        symbols[start..end].sort_by(|a, b| a.3.range.start.cmp(&b.3.range.start));
+        symbols[start..end].sort_by(|a, b| a.4.range.start.cmp(&b.4.range.start));
     }
 
     for (i, it) in symbols.iter().enumerate() {
@@ -395,7 +401,7 @@ impl LanguageServer for Backend {
                 them.iter()
                     .copied()
                     .map(|index| {
-                        let (name, container, kind, location) = &state.symbols[index];
+                        let (name, name_lc, container, kind, location) = &state.symbols[index];
                         SymbolInformation {
                             name: name.clone(),
                             kind: *kind,
@@ -418,13 +424,19 @@ impl LanguageServer for Backend {
         let _ = params;
         let state = state();
 
+        let ql = params.query.to_lowercase();
+
+        use rayon::prelude::*;
+
         let mut symbols = state
             .symbols
-            .iter()
-            .filter_map(|(name, container, kind, location)| {
+            .par_iter()
+            .filter_map(|(name, name_lc, container, kind, location)| {
                 (params.query.is_empty()
                     || name.starts_with(&params.query)
-                    || name.contains(&params.query))
+                    || name.contains(&params.query)
+                    || name_lc.contains(&ql)
+                )
                 .then(|| SymbolInformation {
                     name: name.clone(),
                     kind: *kind,
@@ -436,7 +448,27 @@ impl LanguageServer for Backend {
             })
             .collect::<Vec<_>>();
 
-        symbols.sort_by_key(|it| it.name.len().saturating_sub(params.query.len()));
+        let folder = state
+            .init
+            .workspace_folders
+            .as_ref()
+            .unwrap()
+            .first()
+            .unwrap();
+
+        let workspace_folder = folder.uri.to_file_path().unwrap();
+
+        if !ql.is_empty() {
+            symbols.sort_by_key(|it| {
+                let mut score = 0_u16;
+                if !it.location.uri.to_file_path().unwrap().starts_with(&workspace_folder) {
+                    score += 9999;
+                }
+                let dist = it.name.len().saturating_sub(params.query.len());
+                score += dist as u16;
+                score
+            });
+        }
 
         Ok(Some(symbols))
     }

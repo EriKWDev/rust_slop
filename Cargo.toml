@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rayon = "1.11.0"
 tokio = { version="1.47", features=["full"]}
 tower-lsp = "0.20"
