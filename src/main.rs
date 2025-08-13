@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
 use std::io::{BufRead, Read};
 use std::sync::Mutex;
 use tower_lsp::jsonrpc::{self, Result};
@@ -26,7 +26,7 @@ pub struct State {
     pub symbols: Vec<(String, String, Option<String>, SymbolKind, Location)>,
 
     pub symbol_lookup: HashMap<Url, Vec<usize>>,
-    pub reverse: HashMap<String, Vec<usize>>,
+    // pub reverse: HashMap<String, Vec<usize>>,
 }
 
 pub fn state_initialize(state: &mut State) {
@@ -43,7 +43,7 @@ pub fn state_initialize(state: &mut State) {
     let mut to_do = vec![workspace_folder.clone()];
     let mut files_to_check = vec![];
 
-    let forbidden = ["target", ".git", "backups", "entities", "scenes", "tests", "stdarch", "backtrace"];
+    let forbidden = ["target", ".git", "backups", "entities", "scenes", "tests", "stdarch", "backtrace", "windows", "benches"];
 
     let res = std::process::Command::new("rustup")
         .args(["which", "rustc"])
@@ -123,6 +123,9 @@ pub fn state_initialize(state: &mut State) {
                     if p.ends_with("tests.rs") {
                         continue;
                     }
+                    if p.ends_with("bench.rs") {
+                        continue;
+                    }
 
                     files_to_check.push(current.join(p));
                 }
@@ -136,7 +139,7 @@ pub fn state_initialize(state: &mut State) {
 
     let symbols = &mut state.symbols;
     let lookup = &mut state.symbol_lookup;
-    let reverse = &mut state.reverse;
+    // let reverse = &mut state.reverse;
 
     let mut buf = String::new();
     let mut last_enum_or_struct_name = String::new();
@@ -172,6 +175,7 @@ pub fn state_initialize(state: &mut State) {
                 (SymbolKind::ENUM, "enum "),
                 (SymbolKind::FUNCTION, "fn "),
                 (SymbolKind::CONSTANT, "const "),
+                (SymbolKind::INTERFACE, "trait "),
                 (SymbolKind::TYPE_PARAMETER, "type "),
                 (SymbolKind::MODULE, "mod "),
                 (SymbolKind::VARIABLE, "static "),
@@ -254,10 +258,10 @@ pub fn state_initialize(state: &mut State) {
         symbols[start..end].sort_by(|a, b| a.4.range.start.cmp(&b.4.range.start));
     }
 
-    for (i, it) in symbols.iter().enumerate() {
-        let e = reverse.entry(it.0.clone()).or_default();
-        e.push(i);
-    }
+    // for (i, it) in symbols.iter().enumerate() {
+    //     let e = reverse.entry(it.0.clone()).or_default();
+    //     e.push(i);
+    // }
 }
 
 static mut LOG_PATH: Option<std::path::PathBuf> = None;
@@ -310,14 +314,15 @@ impl LanguageServer for Backend {
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
-                completion_provider: Some(CompletionOptions::default()),
+                // completion_provider: Some(CompletionOptions::default()),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::INCREMENTAL,
-                )),
-                rename_provider: Some(OneOf::Left(true)),
-                position_encoding: Some(PositionEncodingKind::UTF8),
+
+                // text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                //     TextDocumentSyncKind::INCREMENTAL,
+                // )),
+                // rename_provider: Some(OneOf::Left(true)),
+                // position_encoding: Some(PositionEncodingKind::UTF8),
 
                 ..Default::default()
             },
@@ -425,6 +430,7 @@ impl LanguageServer for Backend {
         let state = state();
 
         let ql = params.query.to_lowercase();
+        let first_is_capital = params.query.chars().next().is_some_and(|it| it.is_uppercase());
 
         use rayon::prelude::*;
 
@@ -435,7 +441,7 @@ impl LanguageServer for Backend {
                 (params.query.is_empty()
                     || name.starts_with(&params.query)
                     || name.contains(&params.query)
-                    || name_lc.contains(&ql)
+                    || (!first_is_capital && name_lc.contains(&ql))
                 )
                 .then(|| SymbolInformation {
                     name: name.clone(),
@@ -464,6 +470,11 @@ impl LanguageServer for Backend {
                 if !it.location.uri.to_file_path().unwrap().starts_with(&workspace_folder) {
                     score += 9999;
                 }
+
+                if it.name.starts_with(&params.query) {
+                    score = score.saturating_sub(999);
+                }
+                
                 let dist = it.name.len().saturating_sub(params.query.len());
                 score += dist as u16;
                 score
